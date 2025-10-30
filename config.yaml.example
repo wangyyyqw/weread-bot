@@ -46,7 +46,7 @@ notification:
         spt: SPT_knbgNJypYhLfuxdDEYApFKhWpPdd
 schedule:
   enabled: true
-  cron_expression: 30 9 * * *
+  cron_expression: 0 0 * * *
   timezone: Asia/Shanghai
 hack:
   cookie_refresh_ql: true
