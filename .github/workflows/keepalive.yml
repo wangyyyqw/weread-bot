@@ -1,0 +1,36 @@
+name: Keepalive
+
+# 保活工作流：定期向仓库产生一次提交，防止 GitHub 因仓库长期无活动
+# 而自动禁用定时触发的阅读任务（auto-reading.yml）。
+# GitHub 策略：仓库 60 天内无 push/commit 活动时，schedule 类 workflow 会被禁用。
+
+on:
+  schedule:
+    # 每月 1 号 UTC 02:00 执行一次（北京时间 10:00），远小于 60 天阈值
+    - cron: '0 2 1 * *'
+  # 支持手动触发，方便首次启用或测试
+  workflow_dispatch:
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    permissions:
+      # 需要写入权限才能推送提交
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: 创建保活空提交
+        run: |
+          # 配置提交身份
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # 产生一个空提交，仅用于保持仓库活跃，不修改任何文件
+          # --allow-empty 允许无文件变更的提交
+          git commit --allow-empty -m "chore: keepalive $(date -u '+%Y-%m-%d')"
+
+          # 推送到默认分支
+          git push
