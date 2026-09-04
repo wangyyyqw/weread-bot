@@ -129,6 +129,14 @@
                                     <p class="text-xs text-gray-500 mt-1">支持范围值，如 60-300 表示60到300秒随机，防止被识别，建议尽量设置大一些</p>
                                 </div>
 
+                                <!-- Max Concurrent Users -->
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-2">最大并发用户数</label>
+                                    <input type="number" id="maxConcurrentUsers" value="1" min="1"
+                                           class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500">
+                                    <p class="text-xs text-gray-500 mt-1">多用户模式下同时执行的账号数量，推荐 1-3 之间，根据服务器性能和风控策略调优</p>
+                                </div>
+
                                 <!-- CURL Configuration -->
                                 <div>
                                     <label class="block text-sm font-medium text-gray-700 mb-2">CURL配置方式</label>
@@ -395,6 +403,17 @@
                                     <label class="flex items-center">
                                         <input type="checkbox" id="includeStatistics" checked class="mr-2">
                                         <span class="text-sm font-medium text-gray-700">包含详细统计信息</span>
+                                    </label>
+                                </div>
+
+                                <!-- Only on failure -->
+                                <div>
+                                    <label class="flex items-start space-x-2">
+                                        <input type="checkbox" id="notifyOnlyOnFailure" class="mt-1">
+                                        <div>
+                                            <span class="text-sm font-medium text-gray-700">仅失败时发送通知</span>
+                                            <p class="text-xs text-gray-500 mt-1">启用后将自动关闭单用户成功摘要和多用户总结，仅在失败或程序异常时推送</p>
+                                        </div>
                                     </label>
                                 </div>
 
@@ -862,6 +881,42 @@
                                         </div>
                                     </div>
                                 </div>
+
+                                <!-- History Configuration -->
+                                <div id="historyConfig">
+                                    <h3 class="text-lg font-medium text-gray-900 mb-4">执行历史配置</h3>
+                                    <p class="text-sm text-gray-600 mb-4">保存最近真实执行结果，便于回看和排障；不会写入 Cookie、请求头或原始 CURL</p>
+
+                                    <div class="space-y-4">
+                                        <div>
+                                            <label class="flex items-center">
+                                                <input type="checkbox" id="historyEnabled" checked class="mr-2">
+                                                <span class="text-sm font-medium text-gray-700">启用执行历史持久化</span>
+                                            </label>
+                                        </div>
+
+                                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                            <div>
+                                                <label class="block text-sm font-medium text-gray-700 mb-2">历史文件路径</label>
+                                                <input type="text" id="historyFile" value="logs/run-history.json" placeholder="例如: logs/run-history.json"
+                                                       class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500">
+                                            </div>
+
+                                            <div>
+                                                <label class="block text-sm font-medium text-gray-700 mb-2">保留记录条数</label>
+                                                <input type="number" id="historyMaxEntries" value="50" min="1"
+                                                       class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500">
+                                            </div>
+                                        </div>
+
+                                        <div>
+                                            <label class="flex items-center">
+                                                <input type="checkbox" id="historyPersistRuntimeError" checked class="mr-2">
+                                                <span class="text-sm font-medium text-gray-700">运行时异常也写入失败历史</span>
+                                            </label>
+                                        </div>
+                                    </div>
+                                </div>
                             </div>
                         </div>
 
@@ -912,6 +967,7 @@ app:
   name: WeReadBot
   startup_mode: immediate
   startup_delay: 1-10
+  max_concurrent_users: 1
 
 curl_config:
   file_path: curl_command.txt
@@ -936,7 +992,20 @@ network:
 
 notification:
   enabled: true
-  include_statistics: true</pre>
+  include_statistics: true
+  only_on_failure: false
+  triggers:
+    session_success: true
+    session_failure: true
+    multi_user_summary: true
+    runtime_error: true
+    general: true
+
+history:
+  enabled: true
+  file: logs/run-history.json
+  max_entries: 50
+  persist_runtime_error: true</pre>
                         </div>
 
                         <div class="mt-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
@@ -946,6 +1015,7 @@ notification:
                                 <li>• 可通过环境变量覆盖配置</li>
                                 <li>• 配置文件保存为 config.yaml</li>
                                 <li>• 建议定期备份配置文件</li>
+                                <li>• 执行历史默认写入 logs/run-history.json</li>
                             </ul>
                         </div>
                     </div>
@@ -1084,6 +1154,11 @@ notification:
                     const startupDelay = document.getElementById('startupDelay').value.trim();
                     if (!startupDelay || !isValidRange(startupDelay)) {
                         errors.push('启动延迟格式不正确，应为范围值（如：1-10）或单值');
+                    }
+
+                    const maxConcurrent = parseInt(document.getElementById('maxConcurrentUsers').value);
+                    if (isNaN(maxConcurrent) || maxConcurrent < 1) {
+                        errors.push('最大并发用户数必须为大于等于1的整数');
                     }
 
                     // Validate CURL configuration
@@ -1361,6 +1436,17 @@ notification:
                                class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
                                data-user-input="${userCount}-target_duration" onchange="updateConfigPreview()">
                     </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Cookie刷新QL（可选）</label>
+                        <select
+                            class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                            data-user-input="${userCount}-cookie_refresh_ql" onchange="updateConfigPreview()">
+                            <option value="">沿用全局默认值</option>
+                            <option value="false">false</option>
+                            <option value="true">true</option>
+                        </select>
+                        <p class="mt-1 text-xs text-gray-500">仅当该用户需要与全局 hack.cookie_refresh_ql 不同时设置。</p>
+                    </div>
                 </div>
             `;
 
@@ -1503,11 +1589,13 @@ notification:
         }
 
         function generateConfig() {
+            const notifyOnlyOnFailure = document.getElementById('notifyOnlyOnFailure').checked;
             const config = {
                 app: {
                     name: document.getElementById('appName').value,
                     startup_mode: document.getElementById('startupMode').value,
-                    startup_delay: document.getElementById('startupDelay').value
+                    startup_delay: document.getElementById('startupDelay').value,
+                    max_concurrent_users: parseInt(document.getElementById('maxConcurrentUsers').value) || 1
                 },
                 curl_config: {},
                 reading: {
@@ -1533,6 +1621,14 @@ notification:
                 notification: {
                     enabled: document.getElementById('notificationEnabled').checked,
                     include_statistics: document.getElementById('includeStatistics').checked,
+                    only_on_failure: notifyOnlyOnFailure,
+                    triggers: {
+                        session_success: !notifyOnlyOnFailure,
+                        multi_user_summary: !notifyOnlyOnFailure,
+                        session_failure: true,
+                        runtime_error: true,
+                        general: true
+                    },
                     channels: []
                 }
             };
@@ -1595,11 +1691,15 @@ notification:
                     const name = userElement.querySelector(`[data-user-input="${userId}-name"]`)?.value;
                     const file_path = userElement.querySelector(`[data-user-input="${userId}-file_path"]`)?.value;
                     const target_duration = userElement.querySelector(`[data-user-input="${userId}-target_duration"]`)?.value;
+                    const cookie_refresh_ql = userElement.querySelector(`[data-user-input="${userId}-cookie_refresh_ql"]`)?.value;
 
                     if (name && file_path) {
                         const user = { name, file_path };
                         if (target_duration) {
                             user.reading_overrides = { target_duration };
+                        }
+                        if (cookie_refresh_ql !== "") {
+                            user.cookie_refresh_ql = cookie_refresh_ql === 'true';
                         }
                         config.curl_config.users.push(user);
                     }
@@ -1672,6 +1772,13 @@ notification:
                 console: document.getElementById('logConsole').checked
             };
 
+            config.history = {
+                enabled: document.getElementById('historyEnabled').checked,
+                file: document.getElementById('historyFile').value,
+                max_entries: parseInt(document.getElementById('historyMaxEntries').value) || 50,
+                persist_runtime_error: document.getElementById('historyPersistRuntimeError').checked
+            };
+
             // Convert to YAML
             try {
                 return jsyaml.dump(config, {
@@ -1731,6 +1838,7 @@ notification:
             // Load example configuration
             document.getElementById('startupMode').value = 'immediate';
             document.getElementById('startupDelay').value = '60-300';
+            document.getElementById('maxConcurrentUsers').value = '1';
             document.getElementById('curlFilePath').value = 'curl_command.txt';
             document.getElementById('readingMode').value = 'smart_random';
             document.getElementById('targetDuration').value = '45-90';
@@ -1751,12 +1859,17 @@ notification:
             document.getElementById('rateLimit').value = '10';
             document.getElementById('notificationEnabled').checked = true;
             document.getElementById('includeStatistics').checked = true;
+            document.getElementById('notifyOnlyOnFailure').checked = false;
             document.getElementById('logLevel').value = 'INFO';
             document.getElementById('logFormat').value = 'detailed';
             document.getElementById('logFile').value = 'logs/weread.log';
             document.getElementById('logMaxSize').value = '10MB';
             document.getElementById('logBackupCount').value = '5';
             document.getElementById('logConsole').checked = true;
+            document.getElementById('historyEnabled').checked = true;
+            document.getElementById('historyFile').value = 'logs/run-history.json';
+            document.getElementById('historyMaxEntries').value = '50';
+            document.getElementById('historyPersistRuntimeError').checked = true;
 
             // Add example book
             if (bookCount === 0) {
