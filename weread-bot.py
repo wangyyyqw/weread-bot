@@ -633,23 +633,37 @@ class ReadingSession:
     def get_statistics_summary(self) -> str:
         """获取统计摘要"""
         books_info = (
-            ', '.join(set(self.books_read_names))
-            if self.books_read_names else '无书名信息'
+            '、'.join(dict.fromkeys(self.books_read_names))
+            if self.books_read_names else '暂无书名信息'
         )
-        return f"""📊 微信读书自动阅读统计报告
-👤 用户名称: {self.user_name}
-⏰ 开始时间: {self.start_time.strftime('%Y-%m-%d %H:%M:%S')}
-⏱️ 实际阅读: {self.actual_duration_formatted}
-🎯 目标时长: {self.target_duration_minutes:g}分钟
-✅ 成功请求: {self.successful_reads}次
-❌ 失败请求: {self.failed_reads}次
-📈 成功率: {self.success_rate:.1f}%
-📚 阅读书籍: {len(set(self.books_read))}本 ({books_info})
-📄 阅读章节: {len(set(self.chapters_read))}个
-☕ 休息次数: {self.breaks_taken}次 (共{self.total_break_time}秒)
-🚀 平均响应: {self.average_response_time:.2f}秒
+        status = '✅ 已完成' if self.failed_reads == 0 else '⚠️ 部分请求失败'
 
-        🎉 本次阅读任务完成！"""
+        return f"""📚 **微信读书阅读报告**
+
+**执行信息**
+👤 用户：{self.user_name}
+🕘 开始：{self.start_time.strftime('%Y-%m-%d %H:%M:%S')}
+📌 状态：{status}
+
+**阅读进度**
+⏱️ 实际阅读：{self.actual_duration_formatted}
+🎯 目标时长：{self.target_duration_minutes:g} 分钟
+
+**请求统计**
+✅ 成功请求：{self.successful_reads} 次
+❌ 失败请求：{self.failed_reads} 次
+📈 成功率：{self.success_rate:.1f}%
+🚀 平均响应：{self.average_response_time:.2f} 秒
+
+**阅读内容**
+📚 书籍：{len(set(self.books_read))} 本
+　{books_info}
+📄 章节：{len(set(self.chapters_read))} 个
+
+**行为统计**
+☕ 休息：{self.breaks_taken} 次，共 {self.total_break_time} 秒
+
+🎉 本次阅读任务完成"""
 
 
 @dataclass
@@ -2519,7 +2533,8 @@ class NotificationService:
         data = {
             "token": config["token"],
             "title": "微信读书自动阅读报告",
-            "content": message
+            "content": message,
+            "template": config.get("template", "markdown"),
         }
 
         return self._send_http_notification(url, data, "PushPlus")
