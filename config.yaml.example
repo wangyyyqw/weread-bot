@@ -236,7 +236,7 @@ notification:
 hack:
   # Cookie刷新时ql属性全局默认值
   # 多用户模式下可通过 curl_config.users[].cookie_refresh_ql 为单个用户覆盖
-  # 默认值：false，如果遇到cookie刷新失败的问题，可以尝试设置为true
+  # 默认值：false。程序会自动尝试当前值、另一种值和不带 ql 的兼容方案
   cookie_refresh_ql: false
 
 # 定时任务配置（仅在 startup_mode 为 scheduled 时生效）

@@ -55,6 +55,7 @@ import traceback
 import uuid
 from contextlib import contextmanager
 from contextvars import ContextVar
+from http.cookies import SimpleCookie
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Dict, Any, List, Tuple, Set, Union, Callable
@@ -3680,18 +3681,42 @@ class WeReadSessionManager:
         self, response: httpx.Response
     ) -> Optional[str]:
         """从刷新响应中提取 wr_skey，集中处理兼容分支"""
-        new_skey = response.cookies.get("wr_skey")
+        try:
+            new_skey = response.cookies.get("wr_skey")
+        except RuntimeError:
+            # 手工构造或中间件生成的响应可能没有关联 request，
+            # 此时继续走 Set-Cookie 解析兜底。
+            new_skey = None
         if new_skey:
             return new_skey
 
-        set_cookie = response.headers.get("set-cookie", "")
-        for cookie in set_cookie.split(','):
-            if "wr_skey" not in cookie:
-                continue
-            parts = cookie.split(';')[0]
-            if '=' in parts:
-                return parts.split('=', 1)[1].strip()
+        # 优先逐条读取 Set-Cookie，避免用逗号切分时误拆 Expires 属性。
+        get_list = getattr(response.headers, "get_list", None)
+        set_cookie_headers = (
+            get_list("set-cookie")
+            if callable(get_list)
+            else [response.headers.get("set-cookie", "")]
+        )
+        for set_cookie in set_cookie_headers:
+            parsed_cookie = SimpleCookie()
+            parsed_cookie.load(set_cookie)
+            morsel = parsed_cookie.get("wr_skey")
+            if morsel and morsel.value:
+                return morsel.value
+
         return None
+
+    def _get_cookie_refresh_variants(self) -> List[Dict[str, Any]]:
+        """返回 Cookie 刷新的兼容参数，首选当前用户配置。"""
+        preferred_ql = self._resolve_cookie_refresh_ql()
+        variants = [
+            {"rq": "%2Fweb%2Fbook%2Fread", "ql": preferred_ql},
+            {"rq": "%2Fweb%2Fbook%2Fread", "ql": not preferred_ql},
+            {"rq": "%2Fweb%2Fbook%2Fread"},
+        ]
+
+        # 避免后续修改配置对象时影响已构造的请求数据。
+        return [variant.copy() for variant in variants]
 
     async def _handle_protocol_response(
         self, response_data: Dict[str, Any], response_time: float
@@ -4050,41 +4075,62 @@ class WeReadSessionManager:
         """刷新cookie"""
         logging.info("🍪 刷新cookie...")
 
-        try:
-            response, _ = await self.http_client.post_raw(
-                self.RENEW_URL,
-                headers=self.headers,
-                cookies=self.cookies,
-                json_data=self.cookie_data
-            )
+        variants = self._get_cookie_refresh_variants()
+        for index, cookie_data in enumerate(variants, start=1):
+            try:
+                response, _ = await self.http_client.post_raw(
+                    self.RENEW_URL,
+                    headers=self.headers,
+                    cookies=self.cookies,
+                    json_data=cookie_data,
+                )
 
-            new_skey = self._extract_wr_skey_from_response(response)
+                new_skey = self._extract_wr_skey_from_response(response)
+                if new_skey:
+                    self.cookie_data = cookie_data
+                    self.cookies['wr_skey'] = new_skey
+                    logging.info(
+                        "✅ Cookie刷新成功，新密钥: %s，兼容参数方案 %s/%s",
+                        _secret_marker(new_skey),
+                        index,
+                        len(variants),
+                    )
+                    return True
 
-            if not new_skey:
+                logging.warning(
+                    "⚠️ Cookie刷新响应未返回 wr_skey，尝试兼容参数方案 %s/%s",
+                    index,
+                    len(variants),
+                )
+
+            except Exception as e:
+                # HttpClient 已对当前请求完成网络重试；此处继续尝试其它
+                # ql 方案只对接口兼容性负责，避免吞掉最终错误信息。
+                if index < len(variants):
+                    logging.warning(
+                        "⚠️ Cookie刷新方案 %s/%s 失败，将尝试下一方案: %s",
+                        index,
+                        len(variants),
+                        type(e).__name__,
+                    )
+                    continue
+
                 logging.error(
-                    self._build_protocol_error(
-                        "Cookie 刷新失败",
-                        "响应中未找到 wr_skey，可能是 Cookie 已失效或接口返回结构变更",
+                    format_error_message(
+                        self._build_protocol_error(
+                            "Cookie 刷新请求失败",
+                            "请检查网络状态、认证信息或 renewal 接口兼容性",
+                        ),
+                        e,
                     )
                 )
-                return False
 
-            self.cookies['wr_skey'] = new_skey
-            logging.info(
-                "✅ Cookie刷新成功，新密钥: %s", _secret_marker(new_skey)
+        logging.error(
+            self._build_protocol_error(
+                "Cookie 刷新失败",
+                "所有兼容参数方案均未返回 wr_skey，可能是 Cookie 已失效",
             )
-            return True
-
-        except Exception as e:
-            logging.error(
-                format_error_message(
-                    self._build_protocol_error(
-                        "Cookie 刷新请求失败",
-                        "请检查网络状态、认证信息或 renewal 接口兼容性",
-                    ),
-                    e,
-                )
-            )
+        )
 
         return False
 

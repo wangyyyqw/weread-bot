@@ -106,6 +106,40 @@ class ProtocolStateTests(unittest.IsolatedAsyncioTestCase):
             {"bookIds": ["current-book"]},
         )
 
+    def test_cookie_refresh_variants_prefer_config_then_fallback(self):
+        session = object.__new__(self.bot.WeReadSessionManager)
+        session.user_config = None
+        session.config = self.bot.WeReadConfig(
+            hack=self.bot.HackConfig(cookie_refresh_ql=True)
+        )
+
+        self.assertEqual(
+            session._get_cookie_refresh_variants(),
+            [
+                {"rq": "%2Fweb%2Fbook%2Fread", "ql": True},
+                {"rq": "%2Fweb%2Fbook%2Fread", "ql": False},
+                {"rq": "%2Fweb%2Fbook%2Fread"},
+            ],
+        )
+
+    def test_extract_cookie_keeps_complete_skey_with_expires(self):
+        session = object.__new__(self.bot.WeReadSessionManager)
+        response = self.bot.httpx.Response(
+            200,
+            headers=[
+                (
+                    "set-cookie",
+                    "wr_skey=complete-refresh-key; Expires=Wed, 09 Jun 2038 "
+                    "10:18:14 GMT; Path=/",
+                )
+            ],
+        )
+
+        self.assertEqual(
+            session._extract_wr_skey_from_response(response),
+            "complete-refresh-key",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
