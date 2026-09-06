@@ -447,6 +447,7 @@ notification:
 #### PushPlus
 - 获取方式：访问 [pushplus.plus](https://www.pushplus.plus/) 注册获取token
 - 配置：设置 `PUSHPLUS_TOKEN` 环境变量
+- 消息格式：默认使用 `txt`，可在通道配置中设置为 `markdown` 或 `html`；推荐使用 `txt` 以保留手机推送中的换行
 
 #### Telegram
 - 获取方式：

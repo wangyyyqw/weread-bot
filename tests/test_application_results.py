@@ -72,6 +72,87 @@ class ApplicationResultTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.final_status, "failed")
         self.assertEqual(result.exit_code, 1)
 
+    async def test_multi_user_mode_sends_only_one_aggregate_notification(self):
+        config = self.bot.WeReadConfig(
+            users=[
+                self.bot.UserConfig(name="user1"),
+                self.bot.UserConfig(name="user2"),
+            ],
+            notification=self.bot.NotificationConfig(
+                enabled=True,
+                include_statistics=True,
+            ),
+        )
+        app = object.__new__(self.bot.WeReadApplication)
+        app.config = config
+        app.is_shutdown_requested = lambda: False
+
+        success_stats = self.bot.ReadingSession(
+            user_name="user1",
+            actual_duration_seconds=3745,
+            successful_reads=93,
+        )
+        failed_stats = self.bot.ReadingSession(
+            user_name="user2",
+            actual_duration_seconds=0,
+            failed_reads=1,
+        )
+        session_results = {
+            "user1": self.bot.SessionResult(
+                self.bot.SessionStatus.SUCCESS, success_stats
+            ),
+            "user2": self.bot.SessionResult(
+                self.bot.SessionStatus.FAILED,
+                failed_stats,
+                self.bot.RuntimeErrorCategory.NETWORK,
+                "network failed",
+            ),
+        }
+        manager_calls = []
+
+        def manager_factory(*args, **kwargs):
+            user_config = args[1]
+            manager_calls.append(kwargs)
+            manager = unittest.mock.MagicMock()
+            manager.start_reading_session = AsyncMock(
+                return_value=session_results[user_config.name]
+            )
+            return manager
+
+        notification_service = unittest.mock.MagicMock()
+        notification_service.send_notification_async = AsyncMock(
+            return_value=True
+        )
+
+        with (
+            patch.object(
+                self.bot,
+                "WeReadSessionManager",
+                side_effect=manager_factory,
+            ),
+            patch.object(
+                self.bot,
+                "NotificationService",
+                return_value=notification_service,
+            ),
+        ):
+            result = await self.bot.WeReadApplication._run_multi_user_sessions(
+                app
+            )
+
+        self.assertEqual(result.final_status, "partial_success")
+        self.assertEqual(
+            notification_service.send_notification_async.await_count, 1
+        )
+        message, = notification_service.send_notification_async.call_args.args
+        self.assertIn("📊 微信读书阅读汇总\n\n【用户统计】", message)
+        self.assertIn("✅ 最终状态：部分成功", message)
+        self.assertNotIn("**", message)
+        self.assertEqual(
+            [call["send_notifications"] for call in manager_calls],
+            [False, False],
+        )
+
     async def test_main_returns_run_result_exit_code(self):
         config = self.bot.WeReadConfig(curl_content="safe")
         args = Namespace(

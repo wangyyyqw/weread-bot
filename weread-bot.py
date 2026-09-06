@@ -639,32 +639,32 @@ class ReadingSession:
         )
         status = '✅ 已完成' if self.failed_reads == 0 else '⚠️ 部分请求失败'
 
-        return f"""📚 **微信读书阅读报告**
+        return f"""📚 微信读书阅读报告
 
-**执行信息**
+【执行信息】
 👤 用户：{self.user_name}
 🕘 开始：{self.start_time.strftime('%Y-%m-%d %H:%M:%S')}
 📌 状态：{status}
 
-**阅读进度**
+【阅读进度】
 ⏱️ 实际阅读：{self.actual_duration_formatted}
 🎯 目标时长：{self.target_duration_minutes:g} 分钟
 
-**请求统计**
+【请求统计】
 ✅ 成功请求：{self.successful_reads} 次
 ❌ 失败请求：{self.failed_reads} 次
 📈 成功率：{self.success_rate:.1f}%
 🚀 平均响应：{self.average_response_time:.2f} 秒
 
-**阅读内容**
+【阅读内容】
 📚 书籍：{len(set(self.books_read))} 本
-　{books_info}
+{books_info}
 📄 章节：{len(set(self.chapters_read))} 个
 
-**行为统计**
+【行为统计】
 ☕ 休息：{self.breaks_taken} 次，共 {self.total_break_time} 秒
 
-🎉 本次阅读任务完成"""
+✅ 本次阅读任务完成"""
 
 
 @dataclass
@@ -688,6 +688,13 @@ class RunResult:
     total_duration_seconds: int = 0
     total_reads: int = 0
     total_failed_reads: int = 0
+    total_response_time_seconds: float = 0.0
+    total_response_samples: int = 0
+    total_books: int = 0
+    total_chapters: int = 0
+    total_breaks: int = 0
+    total_break_time_seconds: int = 0
+    book_names: List[str] = field(default_factory=list)
     failure_categories: Dict[str, int] = field(default_factory=dict)
     continue_on_failure: bool = False
 
@@ -706,6 +713,13 @@ class RunResult:
             "total_duration_seconds": self.total_duration_seconds,
             "total_reads": self.total_reads,
             "total_failed_reads": self.total_failed_reads,
+            "total_response_time_seconds": self.total_response_time_seconds,
+            "total_response_samples": self.total_response_samples,
+            "total_books": self.total_books,
+            "total_chapters": self.total_chapters,
+            "total_breaks": self.total_breaks,
+            "total_break_time_seconds": self.total_break_time_seconds,
+            "book_names": self.book_names.copy(),
             "failure_categories": self.failure_categories.copy(),
             "continue_on_failure": self.continue_on_failure,
         }
@@ -761,6 +775,29 @@ class RunResult:
             total_failed_reads=sum(
                 result.stats.failed_reads for result in results
             ),
+            total_response_time_seconds=sum(
+                sum(result.stats.response_times) for result in results
+            ),
+            total_response_samples=sum(
+                len(result.stats.response_times) for result in results
+            ),
+            total_books=sum(
+                len(set(result.stats.books_read)) for result in results
+            ),
+            total_chapters=sum(
+                len(set(result.stats.chapters_read)) for result in results
+            ),
+            total_breaks=sum(
+                result.stats.breaks_taken for result in results
+            ),
+            total_break_time_seconds=sum(
+                result.stats.total_break_time for result in results
+            ),
+            book_names=list(dict.fromkeys(
+                book_name
+                for result in results
+                for book_name in result.stats.books_read_names
+            )),
             failure_categories=failure_categories,
             continue_on_failure=continue_on_failure,
         )
@@ -2535,7 +2572,7 @@ class NotificationService:
             "token": config["token"],
             "title": "微信读书自动阅读报告",
             "content": message,
-            "template": config.get("template", "markdown"),
+            "template": config.get("template", "txt"),
         }
 
         return self._send_http_notification(url, data, "PushPlus")
@@ -3277,6 +3314,7 @@ class WeReadApplication:
                         instance.config,
                         user_config,
                         is_cancelled=instance.is_shutdown_requested,
+                        send_notifications=False,
                     )
                     WeReadApplication._current_session_managers.add(session_manager)
                     session_result = await session_manager.start_reading_session()
@@ -3288,16 +3326,6 @@ class WeReadApplication:
                         f"❌ 用户 {user_config.name} 阅读会话执行失败: {e}"
                     )
                     logging.error(error_msg)
-                    try:
-                        notification_service = NotificationService(
-                            instance.config.notification
-                        )
-                        await notification_service.send_notification_async(
-                            error_msg,
-                            event=NotificationEvent.SESSION_FAILURE
-                        )
-                    except Exception:
-                        pass
                     return user_config.name, SessionResult(
                         SessionStatus.FAILED,
                         ReadingSession(user_name=user_config.name),
@@ -3341,24 +3369,55 @@ class WeReadApplication:
         run_result: RunResult,
     ):
         """生成多用户会话总结"""
-        summary = f"""🎭 多用户阅读会话总结
+        status_text = {
+            "success": "成功",
+            "partial_success": "部分成功",
+            "failed": "失败",
+            "cancelled": "已取消",
+        }.get(run_result.final_status, run_result.final_status)
+        failure_categories = (
+            ", ".join(
+                f"{category}：{count}"
+                for category, count in run_result.failure_categories.items()
+            )
+            if run_result.failure_categories else "无"
+        )
+        summary = f"""📊 微信读书阅读汇总
 
-👥 用户统计:
-  📊 总用户数: {run_result.user_count}
-  ✅ 成功用户: {run_result.successful_users}
-  ❌ 失败用户: {run_result.failed_users}
-  📡 取消用户: {run_result.cancelled_users}
-  ⏭️ 跳过用户: {run_result.skipped_users}
-  🧭 失败后继续: 是
+【用户统计】
+总用户数：{run_result.user_count}
+✅ 成功用户：{run_result.successful_users}
+❌ 失败用户：{run_result.failed_users}
+📡 取消用户：{run_result.cancelled_users}
+⏭️ 跳过用户：{run_result.skipped_users}
+🔁 失败后继续：{"是" if run_result.continue_on_failure else "否"}
 
-📖 阅读统计:
-  ⏱️ 总阅读时长: {run_result.total_duration_seconds // 60}分{run_result.total_duration_seconds % 60}秒
-  ✅ 成功请求: {run_result.total_reads}次
-  ❌ 失败请求: {run_result.total_failed_reads}次
-  🧩 失败分类: {', '.join(f'{category}={count}' for category, count in run_result.failure_categories.items())
-                   if run_result.failure_categories else '无'}
+【阅读统计】
+⏱️ 总阅读时长：{run_result.total_duration_seconds // 60}分{run_result.total_duration_seconds % 60}秒
+✅ 成功请求：{run_result.total_reads}次
+❌ 失败请求：{run_result.total_failed_reads}次
+📈 成功率：{(
+    run_result.total_reads
+    / (run_result.total_reads + run_result.total_failed_reads) * 100
+    if run_result.total_reads + run_result.total_failed_reads else 0
+):.1f}%
+🚀 平均响应：{(
+    run_result.total_response_time_seconds
+    / run_result.total_response_samples
+    if run_result.total_response_samples else 0
+):.2f}秒
 
-最终状态: {run_result.final_status}"""
+【阅读内容】
+📚 书籍：{run_result.total_books}本
+{("、".join(run_result.book_names) if run_result.book_names else "暂无书名信息")}
+📄 章节：{run_result.total_chapters}个
+
+【行为统计】
+☕ 休息：{run_result.total_breaks}次，共{run_result.total_break_time_seconds}秒
+
+🧩 失败分类：{failure_categories}
+
+✅ 最终状态：{status_text}"""
 
         logging.info("📊 多用户会话总结:")
         logging.info(summary)
@@ -3410,11 +3469,13 @@ class WeReadSessionManager:
         config: WeReadConfig,
         user_config: UserConfig = None,
         is_cancelled: Optional[Callable[[], bool]] = None,
+        send_notifications: bool = True,
     ):
         self.config = config
         self.user_config = user_config
         self.user_name = user_config.name if user_config else "default"
         self._is_cancelled = is_cancelled or (lambda: False)
+        self.send_notifications = send_notifications
 
         # 应用用户特定的阅读配置覆盖
         self.effective_reading_config = self._apply_reading_overrides(
@@ -3952,6 +4013,8 @@ class WeReadSessionManager:
 
     async def _notify_session_result(self, result: SessionResult) -> None:
         """按最终状态发送会话通知，通知失败不改变会话结果。"""
+        if not getattr(self, "send_notifications", True):
+            return
         if not (self.config.notification.enabled and
                 self.config.notification.include_statistics):
             return
@@ -4253,6 +4316,19 @@ def build_run_history_record(
         "total_duration_seconds": run_summary.get("total_duration_seconds", 0),
         "total_reads": run_summary.get("total_reads", 0),
         "total_failed_reads": run_summary.get("total_failed_reads", 0),
+        "total_response_time_seconds": run_summary.get(
+            "total_response_time_seconds", 0
+        ),
+        "total_response_samples": run_summary.get(
+            "total_response_samples", 0
+        ),
+        "total_books": run_summary.get("total_books", 0),
+        "total_chapters": run_summary.get("total_chapters", 0),
+        "total_breaks": run_summary.get("total_breaks", 0),
+        "total_break_time_seconds": run_summary.get(
+            "total_break_time_seconds", 0
+        ),
+        "book_names": list(run_summary.get("book_names") or []),
         "failure_categories": failure_categories,
         "continue_on_failure": run_summary.get("continue_on_failure", False),
     }

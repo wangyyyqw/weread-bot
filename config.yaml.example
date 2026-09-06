@@ -120,7 +120,7 @@ notification:
       enabled: true      # 是否启用此通道
       config:
         token: "your_pushplus_token_here"   # 示例：在 pushplus 官网获取的一对一推送 token
-        template: "markdown"                 # 消息格式：markdown、html、txt
+        template: "txt"                      # 消息格式：txt、markdown、html；推荐 txt 以保留换行
 
     # 通道2：Telegram
     - name: "telegram"

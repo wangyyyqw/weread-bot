@@ -15,9 +15,11 @@ class FakeBehavior:
 class FakeNotification:
     def __init__(self):
         self.events = []
+        self.messages = []
 
     async def send_notification_async(self, message, event):
         self.events.append(event)
+        self.messages.append(message)
         return True
 
 
@@ -129,6 +131,32 @@ class SessionLifecycleTests(unittest.IsolatedAsyncioTestCase):
             [self.bot.NotificationEvent.SESSION_FAILURE],
         )
         self.assertEqual(manager.http_client.close_calls, 1)
+
+    async def test_notifications_can_be_deferred_to_multi_user_summary(self):
+        manager = self._manager([], FakeClock())
+        manager.send_notifications = False
+        manager._refresh_cookie = AsyncMock(return_value=False)
+
+        result = await manager.start_reading_session()
+
+        self.assertEqual(result.status, self.bot.SessionStatus.FAILED)
+        self.assertEqual(manager.notification_service.events, [])
+
+    def test_statistics_summary_is_plain_text_with_line_breaks(self):
+        stats = self.bot.ReadingSession(
+            user_name="default",
+            target_duration_minutes=61.903,
+            actual_duration_seconds=3744,
+            successful_reads=93,
+            failed_reads=1,
+            books_read=["book-id"],
+            books_read_names=["动态书籍（fac32ae081...）"],
+        )
+
+        summary = stats.get_statistics_summary()
+
+        self.assertIn("📚 微信读书阅读报告\n\n【执行信息】", summary)
+        self.assertNotIn("**", summary)
 
     async def test_network_failures_keep_network_error_category(self):
         def network_failure():
