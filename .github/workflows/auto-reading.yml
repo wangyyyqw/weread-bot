@@ -223,6 +223,8 @@ jobs:
         SERVERCHAN3_SHORT: ${{ secrets.SERVERCHAN3_SHORT }}
         PUSHDEER_PUSHKEY: ${{ secrets.PUSHDEER_PUSHKEY }}
         PUSHDEER_TYPE: ${{ secrets.PUSHDEER_TYPE }}
+        MEOW_SERVER: ${{ secrets.MEOW_SERVER }}
+        MEOW_NICKNAME: ${{ secrets.MEOW_NICKNAME }}
         NOTIFICATION_ONLY_ON_FAILURE: ${{ secrets.NOTIFICATION_ONLY_ON_FAILURE || github.event.inputs.notify_only_on_failure == 'true' || 'false' }}
         HISTORY_ENABLED: ${{ secrets.HISTORY_ENABLED || github.event.inputs.history_enabled == 'true' || 'true' }}
         HISTORY_FILE: ${{ secrets.HISTORY_FILE || 'logs/run-history.json' }}

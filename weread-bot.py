@@ -285,6 +285,7 @@ NOTIFICATION_CHANNEL_REQUIRED_FIELDS = {
     "gotify": ["server", "token"],
     "serverchan3": ["uid", "sendkey"],
     "pushdeer": ["pushkey"],
+    "meow": ["nickname"],
 }
 NOTIFICATION_CHANNEL_ENV_FIELDS = {
     "pushplus": {"token": "PUSHPLUS_TOKEN"},
@@ -331,6 +332,10 @@ NOTIFICATION_CHANNEL_ENV_FIELDS = {
     "pushdeer": {
         "pushkey": "PUSHDEER_PUSHKEY",
         "type": "PUSHDEER_TYPE",
+    },
+    "meow": {
+        "server": "MEOW_SERVER",
+        "nickname": "MEOW_NICKNAME",
     },
 }
 
@@ -2017,6 +2022,7 @@ def classify_runtime_error(exc: Exception) -> RuntimeErrorCategory:
         "gotify",
         "serverchan3",
         "pushdeer",
+        "meow",
     ]
 
     if any(keyword in message for keyword in auth_keywords):
@@ -2633,6 +2639,8 @@ class NotificationService:
                 return self._send_serverchan3(message, channel.config)
             elif channel.name == "pushdeer":
                 return self._send_pushdeer(message, channel.config)
+            elif channel.name == "meow":
+                return self._send_meow(message, channel.config)
             else:
                 logging.warning(f"⚠️ 未知的通知通道: {channel.name}")
                 return False
@@ -2823,6 +2831,42 @@ class NotificationService:
             data["sound"] = config["sound"]
 
         return self._send_http_notification(bark_url, data, "Bark")
+
+    def _send_meow(self, message: str, config: Dict[str, Any]) -> bool:
+        """发送MeoW通知（api.chuckfang.com）"""
+        if not config.get("nickname"):
+            logging.error("❌ MeoW配置不完整（需要nickname）")
+            return False
+
+        server = config.get("server") or "https://api.chuckfang.com"
+        title = "微信读书自动阅读报告"
+        # 昵称与标题需 URL 编码；标题同时放入 Body，Body 优先级更高
+        meow_url = (
+            f"{server.rstrip('/')}/{urllib.parse.quote(config['nickname'])}"
+            f"/{urllib.parse.quote(title)}"
+        )
+
+        try:
+            response = requests.post(
+                meow_url,
+                json={"title": title, "msg": message},
+                timeout=10,
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except Exception as e:
+            logging.error("❌ MeoW通知发送失败: %s", type(e).__name__)
+            return False
+
+        # 接口失败同样返回 HTTP 200，真实结果在响应体 status 中；
+        # 昵称输错会计入当日封禁次数，故失败后绝不重试
+        if not isinstance(payload, dict) or payload.get("status") != 200:
+            detail = payload.get("msg") if isinstance(payload, dict) else payload
+            logging.error("❌ MeoW通知发送失败: %s", detail)
+            return False
+
+        logging.info("✅ MeoW通知发送成功")
+        return True
 
     def _send_ntfy(self, message: str, config: Dict[str, Any]) -> bool:
         """发送Ntfy通知"""

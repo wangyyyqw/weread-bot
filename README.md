@@ -57,7 +57,7 @@ python weread-bot.py --show-last-run --config config.yaml
 - 🤖 **高级行为模拟**：模拟真实用户阅读行为，包括阅读速度变化、中途休息等
 - ⚙️ **多样化配置**：支持配置文件、环境变量、命令行参数三种设置方式，灵活适配各种部署环境
 - 📊 **详细统计报告**：提供完整的阅读数据、成功率统计和多维度分析
-- 📱 **多平台消息推送**：支持 PushPlus、Telegram、WxPusher、Apprise、Bark、Ntfy、飞书、企业微信、钉钉、Gotify、Server酱³、PushDeer 等通知服务
+- 📱 **多平台消息推送**：支持 PushPlus、Telegram、WxPusher、Apprise、Bark、Ntfy、飞书、企业微信、钉钉、Gotify、Server酱³、PushDeer、MeoW 等通知服务
 - 🔧 **智能配置解析**：自动从 CURL 命令提取请求数据、headers 和 cookies，无需手动配置
 - 🎯 **精准请求模拟**：使用真实抓包数据，动态生成签名和校验，大幅提高成功率
 - 🕐 **灵活定时任务**：支持 cron 表达式定时执行，可自定义执行频率和时间
@@ -492,6 +492,8 @@ notification:
 | | `short` | `SERVERCHAN3_SHORT` | 简短描述（可选） |
 | PushDeer | `pushkey` | `PUSHDEER_PUSHKEY` | PushDeer PushKey |
 | | `type` | `PUSHDEER_TYPE` | 消息类型：text/markdown |
+| MeoW | `server` | `MEOW_SERVER` | MeoW服务器地址（默认：https://api.chuckfang.com） |
+| | `nickname` | `MEOW_NICKNAME` | 接收推送的用户昵称 |
 
 ### 通知方式详细说明
 
@@ -585,6 +587,12 @@ notification:
 - 消息格式：支持 纯文本和Markdown
 - 官网：https://www.pushdeer.com/
 - 文档：https://www.pushdeer.com/official.html
+
+#### MeoW（iOS推送）
+- 获取方式：在 MeoW App 中获取自己的昵称
+- 配置：设置 `MEOW_NICKNAME`；服务器地址可选设置 `MEOW_SERVER`（默认：https://api.chuckfang.com）
+- 注意：不要使用多人共享的公共出口 IP（如公共 CI 默认 IP）向多个昵称推送，可能被判定为攻击行为
+- 文档：https://www.chuckfang.com/MeoW/api_doc.html
 
 #### 自定义通知服务
 

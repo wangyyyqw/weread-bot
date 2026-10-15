@@ -3,7 +3,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from tests.helpers import load_weread_bot
 
@@ -226,6 +226,73 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertNotIn("title", by_name["gotify"].config)
         self.assertEqual(gotify_override["priority"], 7)
         self.assertEqual(gotify_override["title"], "yaml-title")
+
+    def test_meow_channel_is_created_from_nickname_env(self):
+        manager = object.__new__(self.bot.ConfigManager)
+        with patch.dict(
+            os.environ,
+            {"MEOW_NICKNAME": "fake-meow-nickname"},
+            clear=True,
+        ):
+            channels = manager._create_channels_from_env_vars()
+
+        by_name = {channel.name: channel for channel in channels}
+        self.assertEqual(
+            by_name["meow"].config["nickname"], "fake-meow-nickname"
+        )
+        self.assertNotIn("server", by_name["meow"].config)
+        self.assertEqual(
+            self.bot.inspect_notification_channel(
+                self.bot.NotificationChannel(
+                    name="meow", enabled=True, config={}
+                )
+            )[0],
+            "incomplete",
+        )
+
+    def test_meow_notification_defaults_to_official_server(self):
+        service = self.bot.NotificationService(
+            self.bot.NotificationConfig()
+        )
+        response = Mock()
+        response.json.return_value = {"status": 200, "data": True}
+        with patch.object(
+            self.bot.requests, "post", return_value=response
+        ) as post:
+            sent = service._send_meow("测试消息", {"nickname": "测试昵称"})
+
+        self.assertTrue(sent)
+        post.assert_called_once()
+        self.assertEqual(
+            post.call_args.args[0],
+            "https://api.chuckfang.com/%E6%B5%8B%E8%AF%95%E6%98%B5%E7%A7%B0"
+            "/%E5%BE%AE%E4%BF%A1%E8%AF%BB%E4%B9%A6%E8%87%AA%E5%8A%A8"
+            "%E9%98%85%E8%AF%BB%E6%8A%A5%E5%91%8A",
+        )
+        self.assertEqual(post.call_args.kwargs["json"]["msg"], "测试消息")
+        self.assertEqual(
+            post.call_args.kwargs["json"]["title"],
+            "微信读书自动阅读报告",
+        )
+
+    def test_meow_notification_treats_api_error_as_failure(self):
+        service = self.bot.NotificationService(
+            self.bot.NotificationConfig()
+        )
+        response = Mock()
+        response.json.return_value = {
+            "status": 404,
+            "data": False,
+            "msg": "发送失败，该昵称没有注册",
+        }
+        with patch.object(
+            self.bot.requests, "post", return_value=response
+        ) as post:
+            sent = service._send_meow("测试消息", {"nickname": "不存在"})
+
+        self.assertFalse(sent)
+        # 昵称错误不重试，避免触发当日封禁计数
+        post.assert_called_once()
 
     def test_auto_reading_workflow_passes_failure_limit_secret(self):
         workflow_path = (

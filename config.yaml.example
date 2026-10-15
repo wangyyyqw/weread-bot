@@ -231,6 +231,15 @@ notification:
         # 消息类型：text(纯文本), markdown(Markdown)，默认为markdown
         type: "markdown"
 
+    # 通道13：MeoW（api.chuckfang.com）
+    - name: "meow"
+      enabled: false
+      config:
+        # MeoW服务器地址（可选，默认：https://api.chuckfang.com）
+        server: "https://api.chuckfang.com"
+        # 接收推送的用户昵称（必填）
+        nickname: "your_meow_nickname_here"
+
 # Hack配置（用于解决特殊兼容性问题）
 hack:
   # Cookie刷新时ql属性全局默认值
