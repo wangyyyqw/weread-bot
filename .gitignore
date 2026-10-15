@@ -8,6 +8,8 @@ tmp*
 logs/
 
 config.yaml
+# 微信读书抓包凭证（含 Cookie），禁止提交
+curl_command.txt
 
 # C extensions
 *.so
