@@ -1,0 +1,27 @@
+name: Keepalive Commit
+
+# 每月 1 号 UTC 00:00（北京时间 08:00，约 30 天一次）自动提交时间戳。
+# 目的：保持仓库活跃，防止定时工作流因连续 60 天无活动被 GitHub 自动暂停。
+on:
+  schedule:
+    - cron: '0 0 1 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: 更新时间戳并提交
+      run: |
+        date -u +"%Y-%m-%dT%H:%M:%SZ" > .github/keepalive.txt
+        git config user.name "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        git add .github/keepalive.txt
+        git commit -m "chore：定时保活提交，防止定时工作流被暂停"
+        git push
