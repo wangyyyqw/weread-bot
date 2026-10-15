@@ -161,6 +161,11 @@ jobs:
         MAX_CONCURRENT_USERS: ${{ secrets.MAX_CONCURRENT_USERS || 1 }}
         # 单用户连续阅读失败上限，未设置时默认 5
         MAX_CONSECUTIVE_FAILURES: ${{ secrets.MAX_CONSECUTIVE_FAILURES || 5 }}
+        # 应用端每周奖励领取（手机端微信读书 App 抓包获取，检测到凭证自动启用）
+        # GAIN_ACCOUNT 键值格式：RefreshToken=xxx; DeviceId=yyy
+        GAIN_ACCOUNT: ${{ secrets.GAIN_ACCOUNT }}
+        # 奖励类型：1=无限卡（默认），2=书币
+        GAIN_TYPE: ${{ secrets.GAIN_TYPE }}
         # 通知相关环境变量
         PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
         TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
