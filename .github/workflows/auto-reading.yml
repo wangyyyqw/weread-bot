@@ -1,10 +1,11 @@
 name: Auto Reading Bot
 
 on:
-  # 定时触发：每天北京时间 08:00 / 20:00
+  # 定时触发：早班 08:00 / 晚班 20:00（北京时间）。
+  # 由 gate 任务按单双日交替启用，保证每天只运行一次、早晚交替。
   schedule:
-    - cron: '0 0 * * *'    # UTC 00:00 = 北京时间 08:00
-    - cron: '0 12 * * *'   # UTC 12:00 = 北京时间 20:00
+    - cron: '0 0 * * *'    # 早班候选：UTC 00:00 = 北京时间 08:00
+    - cron: '0 12 * * *'   # 晚班候选：UTC 12:00 = 北京时间 20:00
   
   # 拉取请求触发，用于测试阅读
   pull_request:
@@ -54,7 +55,32 @@ on:
         type: string
 
 jobs:
+  # 单双日交替门控：UTC 天数偶数的当天只跑早班 08:00，
+  # 奇数只跑晚班 20:00；手动触发 workflow_dispatch 不受限制。
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.check.outputs.run }}
+    steps:
+    - name: 判断本次定时是否需要运行
+      id: check
+      run: |
+        run=true
+        parity=""
+        if [ "${{ github.event_name }}" = "schedule" ]; then
+          parity=$(( $(date -u +%s) / 86400 % 2 ))
+          if [ "${{ github.event.schedule }}" = "0 0 * * *" ] && [ "$parity" -eq 1 ]; then
+            run=false
+          elif [ "${{ github.event.schedule }}" = "0 12 * * *" ] && [ "$parity" -eq 0 ]; then
+            run=false
+          fi
+        fi
+        echo "事件=${{ github.event_name }} 触发=${{ github.event.schedule }} 天数奇偶=$parity 是否运行=$run"
+        echo "run=$run" >> "$GITHUB_OUTPUT"
+
   auto-reading:
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 120  # 2小时超时
     
