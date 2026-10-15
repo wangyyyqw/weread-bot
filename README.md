@@ -461,6 +461,8 @@ notification:
 
 将 `only_on_failure` 设为 `true` 即等价于关闭 `session_success` 和 `multi_user_summary`，从而在单用户、多用户场景下都实现“仅失败通知”。如需更细粒度的控制，可单独调整 `triggers` 中的对应事件。
 
+> 单用户运行时不会推送 `multi_user_summary`（多用户阅读会话总结），避免与会话摘要重复；该总结仍会写入运行日志。
+
 | 通知服务 | 配置参数 | 环境变量 | 说明 |
 |---------|---------|----------|------|
 | PushPlus | `token` | `PUSHPLUS_TOKEN` | PushPlus推送token |

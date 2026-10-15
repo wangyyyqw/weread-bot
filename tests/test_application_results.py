@@ -138,6 +138,34 @@ class ApplicationResultTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(exit_code, 130)
 
+    async def test_single_user_run_skips_multi_user_summary_notification(self):
+        app = object.__new__(self.bot.WeReadApplication)
+        app.config = self.bot.WeReadConfig()
+        single = self.bot.RunResult(
+            final_status="success", user_count=1, successful_users=1
+        )
+        multi = self.bot.RunResult(
+            final_status="success", user_count=2, successful_users=2
+        )
+
+        send = AsyncMock()
+        with patch.object(
+            self.bot.NotificationService,
+            "send_notification_async",
+            new=send,
+        ):
+            with self.assertLogs(level="INFO"):
+                await self.bot.WeReadApplication._generate_multi_user_summary(
+                    app, single
+                )
+            send.assert_not_awaited()
+
+            with self.assertLogs(level="INFO"):
+                await self.bot.WeReadApplication._generate_multi_user_summary(
+                    app, multi
+                )
+            send.assert_awaited_once()
+
     async def test_dry_run_validation_failure_does_not_send_notification(self):
         config = self.bot.WeReadConfig(curl_content="safe")
         args = Namespace(

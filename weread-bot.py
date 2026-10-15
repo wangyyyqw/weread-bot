@@ -3618,6 +3618,12 @@ class WeReadApplication:
 
         logging.info("📊 多用户会话总结:")
         logging.info(summary)
+
+        # 单用户场景下会话摘要已单独推送，跳过重复的多用户总结通知
+        if run_result.user_count <= 1:
+            logging.info("🔕 单用户运行，跳过多用户总结通知")
+            return
+
         # 发送总结通知
         if (instance.config.notification.enabled and
                 instance.config.notification.include_statistics):
