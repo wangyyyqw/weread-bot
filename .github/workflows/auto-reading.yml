@@ -1,11 +1,10 @@
 name: Auto Reading Bot
 
 on:
-  # 定时触发：早班 07:38 / 晚班 20:36（北京时间）。
-  # 由 gate 任务按单双日交替启用，保证每天只运行一次、早晚交替。
+  # 定时触发：每天北京时间 14:18（UTC 06:18）。
+  # 单条 cron 每天固定运行一次；不再按单双日交替，避免定时投递延迟跨天后班次错位。
   schedule:
-    - cron: '38 23 * * *'  # 早班候选：UTC 23:38 = 北京时间 07:38
-    - cron: '36 12 * * *'  # 晚班候选：UTC 12:36 = 北京时间 20:36
+    - cron: '18 6 * * *'  # UTC 06:18 = 北京时间 14:18
   
   # 拉取请求触发，用于测试阅读
   pull_request:
@@ -55,34 +54,7 @@ on:
         type: string
 
 jobs:
-  # 单双日交替门控：UTC 天数偶数的当天只跑早班 07:38，
-  # 奇数只跑晚班 20:36；手动触发 workflow_dispatch 不受限制。
-  gate:
-    runs-on: ubuntu-latest
-    outputs:
-      run: ${{ steps.check.outputs.run }}
-    steps:
-    - name: 判断本次定时是否需要运行
-      id: check
-      run: |
-        run=true
-        parity=""
-        if [ "${{ github.event_name }}" = "schedule" ]; then
-          # 07:38 北京时间对应 UTC 前一天，单双日必须按北京时间日期计算。
-          parity=$(TZ=Asia/Shanghai python -c \
-            'import datetime; print(datetime.datetime.now().day % 2)')
-          if [ "${{ github.event.schedule }}" = "38 23 * * *" ] && [ "$parity" -eq 1 ]; then
-            run=false
-          elif [ "${{ github.event.schedule }}" = "36 12 * * *" ] && [ "$parity" -eq 0 ]; then
-            run=false
-          fi
-        fi
-        echo "事件=${{ github.event_name }} 触发=${{ github.event.schedule }} 天数奇偶=$parity 是否运行=$run"
-        echo "run=$run" >> "$GITHUB_OUTPUT"
-
   auto-reading:
-    needs: gate
-    if: needs.gate.outputs.run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 120  # 2小时超时
     
