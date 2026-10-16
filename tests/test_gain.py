@@ -1,0 +1,470 @@
+"""gain（应用端每周奖励领取）配置解析、校验与领奖流程单元测试。"""
+import asyncio
+import os
+import json
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+import httpx
+
+from tests.helpers import load_weread_bot
+
+
+def _make_response(payload, status_code=200, url="https://i.weread.qq.com/x"):
+    request = httpx.Request("POST", url)
+    response = httpx.Response(
+        status_code, json=payload, request=request
+    )
+    return response
+
+
+class FakeHttpClient:
+    """按顺序回放预置响应的 HttpClient 替身。"""
+
+    def __init__(self, script):
+        # script: list of (payload, status_code) 或 Exception 实例
+        self.script = list(script)
+        self.requests = []
+
+    async def post_raw(self, url, headers=None, cookies=None,
+                       json_data=None, data=None):
+        self.requests.append({"url": url, "headers": headers, "json": json_data})
+        item = self.script.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        payload, status_code = item
+        response = _make_response(payload, status_code, url)
+        if status_code >= 400:
+            raise httpx.HTTPStatusError(
+                f"client error {status_code}",
+                request=response.request,
+                response=response,
+            )
+        return response, 0.01
+
+    async def close(self):
+        pass
+
+
+class GainConfigParsingTests(unittest.TestCase):
+    def setUp(self):
+        self.bot = load_weread_bot()
+
+    def _config_file(self, text):
+        temp = tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False)
+        temp.write(text)
+        temp.close()
+        self.addCleanup(lambda: Path(temp.name).unlink(missing_ok=True))
+        return temp.name
+
+    def test_gain_section_defaults(self):
+        path = self._config_file("network:\n  timeout: 10\n")
+        config = self.bot.ConfigManager(path).config
+        self.assertFalse(config.gain.enabled)
+        self.assertEqual(config.gain.gain_type, 1)
+        self.assertEqual(config.gain.refresh_token, "")
+        self.assertEqual(config.gain.device_id, "")
+
+    def test_gain_section_from_yaml(self):
+        path = self._config_file(
+            "gain:\n"
+            "  enabled: true\n"
+            "  gain_type: 2\n"
+            "  refresh_token: rt-yaml\n"
+            "  device_id: dev-yaml\n"
+        )
+        config = self.bot.ConfigManager(path).config
+        self.assertTrue(config.gain.enabled)
+        self.assertEqual(config.gain.gain_type, 2)
+        self.assertEqual(config.gain.refresh_token, "rt-yaml")
+        self.assertEqual(config.gain.device_id, "dev-yaml")
+
+    def test_gain_env_override(self):
+        path = self._config_file("gain:\n  enabled: false\n")
+        with patch.dict(os.environ, {
+            "GAIN_ENABLED": "true",
+            "GAIN_REFRESH_TOKEN": "rt-env",
+            "GAIN_DEVICE_ID": "dev-env",
+            "GAIN_TYPE": "2",
+        }):
+            config = self.bot.ConfigManager(path).config
+        self.assertTrue(config.gain.enabled)
+        self.assertEqual(config.gain.refresh_token, "rt-env")
+        self.assertEqual(config.gain.device_id, "dev-env")
+        self.assertEqual(config.gain.gain_type, 2)
+
+    def test_enabled_without_credentials_raises(self):
+        path = self._config_file("gain:\n  enabled: true\n")
+        with self.assertRaises(self.bot.ConfigError) as captured:
+            self.bot.ConfigManager(path)
+        self.assertIn("gain.refresh_token", str(captured.exception))
+
+    def test_enabled_without_device_id_raises(self):
+        path = self._config_file(
+            "gain:\n  enabled: true\n  refresh_token: rt\n"
+        )
+        with self.assertRaises(self.bot.ConfigError) as captured:
+            self.bot.ConfigManager(path)
+        self.assertIn("gain.device_id", str(captured.exception))
+
+    def test_invalid_gain_type_raises(self):
+        path = self._config_file(
+            "gain:\n  enabled: true\n  gain_type: 3\n"
+            "  refresh_token: rt\n  device_id: dev\n"
+        )
+        with self.assertRaises(self.bot.ConfigError) as captured:
+            self.bot.ConfigManager(path)
+        self.assertIn("gain.gain_type", str(captured.exception))
+
+    def test_gain_account_env_provides_credentials(self):
+        path = self._config_file("gain:\n  enabled: true\n")
+        account = json.dumps({
+            "Vid": 42, "RefreshToken": "rt-acct", "DeviceId": "dev-acct",
+        })
+        with patch.dict(os.environ, {"GAIN_ACCOUNT": account}):
+            config = self.bot.ConfigManager(path).config
+        self.assertEqual(config.gain.refresh_token, "rt-acct")
+        self.assertEqual(config.gain.device_id, "dev-acct")
+
+    def test_gain_account_alone_auto_enables(self):
+        path = self._config_file("logging:\n  format: simple\n")
+        account = json.dumps({
+            "Vid": 42, "RefreshToken": "rt-acct", "DeviceId": "dev-acct",
+        })
+        with patch.dict(os.environ, {"GAIN_ACCOUNT": account}):
+            config = self.bot.ConfigManager(path).config
+        self.assertTrue(config.gain.enabled)
+        self.assertEqual(config.gain.gain_type, 1)
+
+    def test_gain_credentials_in_yaml_auto_enable(self):
+        path = self._config_file(
+            "gain:\n  refresh_token: rt\n  device_id: dev\n"
+        )
+        config = self.bot.ConfigManager(path).config
+        self.assertTrue(config.gain.enabled)
+
+    def test_gain_account_with_explicit_false_stays_disabled(self):
+        path = self._config_file("gain:\n  enabled: false\n")
+        account = json.dumps({"RefreshToken": "rt", "DeviceId": "dev"})
+        with patch.dict(os.environ, {"GAIN_ACCOUNT": account}):
+            config = self.bot.ConfigManager(path).config
+        self.assertFalse(config.gain.enabled)
+
+    def test_no_credentials_stays_disabled(self):
+        path = self._config_file("logging:\n  format: simple\n")
+        config = self.bot.ConfigManager(path).config
+        self.assertFalse(config.gain.enabled)
+
+    def test_gain_account_env_accepts_camel_case(self):
+        path = self._config_file("gain:\n  enabled: true\n")
+        account = json.dumps({"refreshToken": "rt-camel", "deviceId": "dev-camel"})
+        with patch.dict(os.environ, {"GAIN_ACCOUNT": account}):
+            config = self.bot.ConfigManager(path).config
+        self.assertEqual(config.gain.refresh_token, "rt-camel")
+        self.assertEqual(config.gain.device_id, "dev-camel")
+
+    def test_gain_account_invalid_json_raises(self):
+        path = self._config_file("gain:\n  enabled: true\n")
+        with patch.dict(os.environ, {"GAIN_ACCOUNT": "not-json"}):
+            with self.assertRaises(self.bot.ConfigError) as captured:
+                self.bot.ConfigManager(path)
+        self.assertIn("gain.account", str(captured.exception))
+        self.assertNotIn("not-json", str(captured.exception))
+
+    def test_gain_account_pair_format(self):
+        path = self._config_file("gain:\n  enabled: true\n")
+        with patch.dict(os.environ, {
+            "GAIN_ACCOUNT": "RefreshToken=rt-pair; DeviceId=dev-pair",
+        }):
+            config = self.bot.ConfigManager(path).config
+        self.assertEqual(config.gain.refresh_token, "rt-pair")
+        self.assertEqual(config.gain.device_id, "dev-pair")
+
+    def test_gain_account_pair_format_is_lenient(self):
+        # 大小写/下划线/空格/引号不敏感；值里允许带 base64 的 = 号
+        path = self._config_file("gain:\n  enabled: true\n")
+        raw = " refresh_token = 'abc==' ;  DEVICEID =\"dev\" ;; extra=1"
+        with patch.dict(os.environ, {"GAIN_ACCOUNT": raw}):
+            config = self.bot.ConfigManager(path).config
+        self.assertEqual(config.gain.refresh_token, "abc==")
+        self.assertEqual(config.gain.device_id, "dev")
+
+    def test_gain_account_pair_without_separator_raises(self):
+        path = self._config_file("gain:\n  enabled: true\n")
+        with patch.dict(os.environ, {"GAIN_ACCOUNT": "RefreshToken 没有等号"}):
+            with self.assertRaises(self.bot.ConfigError) as captured:
+                self.bot.ConfigManager(path)
+        self.assertIn("gain.account", str(captured.exception))
+
+    def test_gain_account_unrecognized_keys_raise(self):
+        path = self._config_file("gain:\n  enabled: true\n")
+        with patch.dict(os.environ, {"GAIN_ACCOUNT": "foo=1; bar=2"}):
+            with self.assertRaises(self.bot.ConfigError) as captured:
+                self.bot.ConfigManager(path)
+        self.assertIn("gain.account", str(captured.exception))
+
+    def test_gain_account_does_not_leak_secret_in_error(self):
+        path = self._config_file("gain:\n  enabled: true\n")
+        account = json.dumps({"RefreshToken": "rt-leak", "DeviceId": 123})
+        with patch.dict(os.environ, {"GAIN_ACCOUNT": account}):
+            config = self.bot.ConfigManager(path).config
+        self.assertEqual(config.gain.refresh_token, "rt-leak")
+        self.assertEqual(config.gain.device_id, "123")
+
+
+class GainManagerFlowTests(unittest.TestCase):
+    def setUp(self):
+        self.bot = load_weread_bot()
+
+    def _manager(self, script):
+        config = self.bot.WeReadConfig()
+        config.gain = self.bot.GainConfig(
+            enabled=True,
+            gain_type=1,
+            refresh_token="rt-secret",
+            device_id="dev-secret",
+        )
+        client = FakeHttpClient(script)
+        return self.bot.GainManager(config, http_client=client), client
+
+    def test_claims_only_claimable_awards(self):
+        manager, client = self._manager([
+            ({"accessToken": "tok-123", "vid": 42}, 200),
+            ({
+                "readtimeAwards": [
+                    {"awardLevelId": 1, "awardStatus": 2},
+                    {
+                        "awardLevelId": 2,
+                        "awardStatus": 1,
+                        "awardLevelDesc": "读 1 小时",
+                        "awardChoices": [
+                            {"choiceType": 1, "awardNum": 1},
+                            {"choiceType": 2, "awardNum": 2},
+                        ],
+                    },
+                ],
+                "readdayAwards": [
+                    {"awardLevelId": 11, "awardStatus": 0},
+                    {
+                        "awardLevelId": 12,
+                        "awardStatus": 1,
+                        "awardLevelDesc": "读 4 天",
+                        "awardChoices": [
+                            {"choiceType": 1, "awardNum": 2},
+                            {"choiceType": 2, "awardNum": 4},
+                        ],
+                    },
+                ],
+                "readgoalAwards": [],
+            }, 200),
+            ({"succ": 1}, 200),
+            ({"succ": 1}, 200),
+        ])
+        summary = asyncio.run(manager.run())
+
+        self.assertEqual(summary["status"], "success")
+        self.assertEqual(summary["claimable"], 2)
+        self.assertEqual(summary["claimed"], [2, 12])
+        self.assertEqual(
+            summary["claimed_rewards"], ["1天体验卡", "2天体验卡"]
+        )
+
+        exchange_bodies = [
+            r["json"] for r in client.requests
+            if r["url"].endswith("/weekly/exchange")
+        ]
+        self.assertEqual(len(exchange_bodies), 3)
+        self.assertEqual(
+            exchange_bodies[0],
+            {
+                "awardLevelId": 0,
+                "awardChoiceType": 0,
+                "isExchangeAward": 0,
+                "isVisitReadGoal": 1,
+                "unread": 1,
+                "pf": self.bot.GAIN_PF,
+            },
+        )
+        self.assertEqual(exchange_bodies[1]["awardLevelId"], 2)
+        self.assertEqual(exchange_bodies[1]["isExchangeAward"], 1)
+        self.assertEqual(exchange_bodies[1]["awardChoiceType"], 1)
+        self.assertEqual(exchange_bodies[2]["awardLevelId"], 12)
+
+        login_request = client.requests[0]
+        self.assertEqual(login_request["json"]["refreshToken"], "rt-secret")
+        self.assertEqual(login_request["json"]["deviceId"], "dev-secret")
+        self.assertNotIn("accesstoken", login_request["headers"])
+
+        exchange_with_token = [
+            r for r in client.requests
+            if r["url"].endswith("/weekly/exchange")
+        ]
+        self.assertTrue(exchange_with_token)
+        for exchange_request in exchange_with_token:
+            self.assertEqual(
+                exchange_request["headers"]["accesstoken"], "tok-123"
+            )
+            self.assertEqual(exchange_request["headers"]["vid"], "42")
+
+    def test_no_claimable_awards_skips_claim(self):
+        manager, client = self._manager([
+            ({"accessToken": "tok-123", "vid": 42}, 200),
+            ({
+                "readtimeAwards": [{"awardLevelId": 1, "awardStatus": 2}],
+                "readdayAwards": [],
+                "readgoalAwards": [],
+            }, 200),
+        ])
+        summary = asyncio.run(manager.run())
+
+        self.assertEqual(summary["status"], "success")
+        self.assertEqual(summary["claimable"], 0)
+        self.assertEqual(summary["claimed"], [])
+        self.assertEqual(
+            len([r for r in client.requests
+                 if r["url"].endswith("/weekly/exchange")]),
+            1,
+        )
+
+    def test_reward_description_uses_actual_choice_quantity(self):
+        award = {
+            "awardChoicesDesc": "可得 2 天体验卡或 4 书币",
+            "awardChoices": [
+                {"choiceType": 1, "awardNum": 2},
+                {"choiceType": 2, "awardNum": 4},
+            ],
+        }
+
+        self.assertEqual(
+            self.bot.GainManager._describe_reward(award, 1), "2天体验卡"
+        )
+        self.assertEqual(
+            self.bot.GainManager._describe_reward(award, 2), "4书币"
+        )
+
+    def test_gain_notification_uses_reward_name_not_level_id(self):
+        message = self.bot.format_gain_notification({
+            "status": "success",
+            "gain_type": 1,
+            "claimed": [11],
+            "claimed_rewards": ["2天体验卡"],
+        })
+
+        self.assertEqual(message, "🎁 已领取：2天体验卡")
+        self.assertNotIn("11", message)
+
+    def test_login_failure_reports_error_without_secrets(self):
+        manager, _ = self._manager([
+            ({"errcode": -2013, "errmsg": "鉴权失败"}, 401),
+        ])
+        summary = asyncio.run(manager.run())
+
+        self.assertEqual(summary["status"], "failed")
+        self.assertIn("-2013", summary["error"])
+        rendered = json.dumps(summary, ensure_ascii=False)
+        self.assertNotIn("rt-secret", rendered)
+        self.assertNotIn("dev-secret", rendered)
+
+    def test_partial_claim_failure_is_partial_success(self):
+        manager, _ = self._manager([
+            ({"accessToken": "tok-123", "vid": 42}, 200),
+            ({
+                "readtimeAwards": [
+                    {"awardLevelId": 2, "awardStatus": 1},
+                    {"awardLevelId": 5, "awardStatus": 1},
+                ],
+                "readdayAwards": [],
+                "readgoalAwards": [],
+            }, 200),
+            ({"succ": 1}, 200),
+            ({"errcode": -3002, "errmsg": "奖励已兑换"}, 200),
+        ])
+        summary = asyncio.run(manager.run())
+
+        self.assertEqual(summary["status"], "partial_success")
+        self.assertEqual(summary["claimed"], [2])
+
+    def test_summary_never_contains_access_token(self):
+        manager, _ = self._manager([
+            ({"accessToken": "tok-secret", "vid": 42}, 200),
+            ({
+                "readtimeAwards": [],
+                "readdayAwards": [],
+                "readgoalAwards": [],
+            }, 200),
+        ])
+        summary = asyncio.run(manager.run())
+        self.assertNotIn("tok-secret", json.dumps(summary, ensure_ascii=False))
+
+    def test_run_with_credentials_skips_login(self):
+        manager, client = self._manager([
+            ({
+                "readtimeAwards": [{"awardLevelId": 2, "awardStatus": 1}],
+                "readdayAwards": [],
+                "readgoalAwards": [],
+            }, 200),
+            ({"succ": 1}, 200),
+        ])
+        summary = asyncio.run(manager.run(credentials=("tok-123", 42)))
+
+        self.assertEqual(summary["status"], "success")
+        self.assertEqual(summary["claimed"], [2])
+        self.assertEqual(client.requests[0]["url"].count("/weekly/exchange"), 1)
+        self.assertEqual(client.requests[0]["headers"]["accesstoken"], "tok-123")
+        self.assertTrue(
+            all("/login" not in r["url"] for r in client.requests)
+        )
+
+    def test_derive_web_cookies_returns_cookie_dict(self):
+        manager, client = self._manager([
+            ({"accessToken": "tok-123", "vid": 42}, 200),
+        ])
+        cookies = asyncio.run(manager.derive_web_cookies(client))
+        self.assertEqual(
+            cookies, {"wr_vid": "42", "wr_skey": "tok-123"}
+        )
+        self.assertEqual(client.requests[0]["url"], self.bot.GAIN_LOGIN_URL)
+
+
+class GainResultReportingTests(unittest.TestCase):
+    def setUp(self):
+        self.bot = load_weread_bot()
+
+    def test_run_result_summary_includes_gain(self):
+        result = self.bot.RunResult(
+            final_status="success", user_count=1, successful_users=1,
+            gain={"status": "success", "claimed": [2]},
+        )
+        summary = result.to_summary_dict()
+        self.assertEqual(summary["gain"]["claimed"], [2])
+
+    def test_run_result_summary_omits_gain_when_absent(self):
+        result = self.bot.RunResult(final_status="success", user_count=1)
+        self.assertNotIn("gain", result.to_summary_dict())
+
+    def test_run_history_record_includes_gain(self):
+        config = self.bot.WeReadConfig()
+        config.history = self.bot.HistoryConfig(enabled=True, file=":memory:")
+        record = self.bot.build_run_history_record(
+            config=config,
+            execution_type="normal",
+            run_summary={"gain": {"status": "success", "claimed": [2]}},
+        )
+        self.assertEqual(record["gain"]["claimed"], [2])
+
+    def test_format_last_run_summary_renders_gain(self):
+        text = self.bot.format_last_run_summary({
+            "recorded_at": "2026-09-12T12:00:00+08:00",
+            "execution_type": "normal",
+            "startup_mode": "immediate",
+            "final_status": "success",
+            "gain": {"status": "success", "claimed": [2, 12], "gain_type": 1},
+        })
+        self.assertIn("已领取体验卡奖励", text)
+        self.assertNotIn("档位", text)
+
+
+if __name__ == "__main__":
+    unittest.main()
