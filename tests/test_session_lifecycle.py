@@ -117,17 +117,14 @@ class SessionLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(manager.notification_service.events, [])
         self.assertEqual(manager.http_client.close_calls, 1)
 
-    async def test_auth_failure_sends_failure_notification_and_closes(self):
+    async def test_auth_failure_defers_notification_until_run_summary(self):
         manager = self._manager([], FakeClock())
         manager._refresh_cookie = AsyncMock(return_value=False)
 
         result = await manager.start_reading_session()
 
         self.assertEqual(result.status, self.bot.SessionStatus.FAILED)
-        self.assertEqual(
-            manager.notification_service.events,
-            [self.bot.NotificationEvent.SESSION_FAILURE],
-        )
+        self.assertEqual(manager.notification_service.events, [])
         self.assertEqual(manager.http_client.close_calls, 1)
 
     async def test_network_failures_keep_network_error_category(self):

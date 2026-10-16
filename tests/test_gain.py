@@ -235,11 +235,27 @@ class GainManagerFlowTests(unittest.TestCase):
             ({
                 "readtimeAwards": [
                     {"awardLevelId": 1, "awardStatus": 2},
-                    {"awardLevelId": 2, "awardStatus": 1},
+                    {
+                        "awardLevelId": 2,
+                        "awardStatus": 1,
+                        "awardLevelDesc": "读 1 小时",
+                        "awardChoices": [
+                            {"choiceType": 1, "awardNum": 1},
+                            {"choiceType": 2, "awardNum": 2},
+                        ],
+                    },
                 ],
                 "readdayAwards": [
                     {"awardLevelId": 11, "awardStatus": 0},
-                    {"awardLevelId": 12, "awardStatus": 1},
+                    {
+                        "awardLevelId": 12,
+                        "awardStatus": 1,
+                        "awardLevelDesc": "读 4 天",
+                        "awardChoices": [
+                            {"choiceType": 1, "awardNum": 2},
+                            {"choiceType": 2, "awardNum": 4},
+                        ],
+                    },
                 ],
                 "readgoalAwards": [],
             }, 200),
@@ -251,6 +267,9 @@ class GainManagerFlowTests(unittest.TestCase):
         self.assertEqual(summary["status"], "success")
         self.assertEqual(summary["claimable"], 2)
         self.assertEqual(summary["claimed"], [2, 12])
+        self.assertEqual(
+            summary["claimed_rewards"], ["1天体验卡", "2天体验卡"]
+        )
 
         exchange_bodies = [
             r["json"] for r in client.requests
@@ -308,6 +327,33 @@ class GainManagerFlowTests(unittest.TestCase):
                  if r["url"].endswith("/weekly/exchange")]),
             1,
         )
+
+    def test_reward_description_uses_actual_choice_quantity(self):
+        award = {
+            "awardChoicesDesc": "可得 2 天体验卡或 4 书币",
+            "awardChoices": [
+                {"choiceType": 1, "awardNum": 2},
+                {"choiceType": 2, "awardNum": 4},
+            ],
+        }
+
+        self.assertEqual(
+            self.bot.GainManager._describe_reward(award, 1), "2天体验卡"
+        )
+        self.assertEqual(
+            self.bot.GainManager._describe_reward(award, 2), "4书币"
+        )
+
+    def test_gain_notification_uses_reward_name_not_level_id(self):
+        message = self.bot.format_gain_notification({
+            "status": "success",
+            "gain_type": 1,
+            "claimed": [11],
+            "claimed_rewards": ["2天体验卡"],
+        })
+
+        self.assertEqual(message, "🎁 已领取：2天体验卡")
+        self.assertNotIn("11", message)
 
     def test_login_failure_reports_error_without_secrets(self):
         manager, _ = self._manager([
@@ -416,7 +462,8 @@ class GainResultReportingTests(unittest.TestCase):
             "final_status": "success",
             "gain": {"status": "success", "claimed": [2, 12], "gain_type": 1},
         })
-        self.assertIn("领奖: 已领取档位 [2, 12]", text)
+        self.assertIn("已领取体验卡奖励", text)
+        self.assertNotIn("档位", text)
 
 
 if __name__ == "__main__":

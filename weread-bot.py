@@ -781,6 +781,106 @@ class RunResult:
         )
 
 
+def format_gain_notification(gain_summary: Dict[str, Any]) -> str:
+    """将领奖摘要转换为用户可读的实际奖励名称。"""
+    status = gain_summary.get("status")
+    if status == "failed":
+        detail = gain_summary.get("error") or "本次奖励未领取成功"
+        return f"🎁 奖励领取失败：{detail}"
+
+    claimed_rewards = gain_summary.get("claimed_rewards") or []
+    if claimed_rewards:
+        reward_text = "、".join(claimed_rewards)
+        if status == "partial_success":
+            return f"🎁 已领取：{reward_text}（部分奖励领取失败）"
+        return f"🎁 已领取：{reward_text}"
+
+    if gain_summary.get("claimed"):
+        reward_name = "体验卡" if gain_summary.get("gain_type", 1) == 1 else "书币"
+        return f"🎁 已领取{reward_name}奖励"
+    if gain_summary.get("claimable", 0):
+        return "🎁 奖励领取失败：本次奖励未领取成功"
+    return "🎁 本次没有可领取的奖励"
+
+
+def _format_multi_user_statistics(run_result: RunResult) -> List[str]:
+    """生成多用户阅读统计通知内容。"""
+    failure_text = (
+        ", ".join(
+            f"{category}={count}"
+            for category, count in run_result.failure_categories.items()
+        )
+        if run_result.failure_categories else "无"
+    )
+    return [
+        "🎭 多用户阅读会话总结",
+        "",
+        "👥 用户统计:",
+        f"  📊 总用户数: {run_result.user_count}",
+        f"  ✅ 成功用户: {run_result.successful_users}",
+        f"  ❌ 失败用户: {run_result.failed_users}",
+        f"  📡 取消用户: {run_result.cancelled_users}",
+        f"  ⏭️ 跳过用户: {run_result.skipped_users}",
+        "  🧭 失败后继续: 是",
+        "",
+        "📖 阅读统计:",
+        f"  ⏱️ 总阅读时长: {run_result.total_duration_seconds // 60}分"
+        f"{run_result.total_duration_seconds % 60}秒",
+        f"  ✅ 成功请求: {run_result.total_reads}次",
+        f"  ❌ 失败请求: {run_result.total_failed_reads}次",
+        f"  🧩 失败分类: {failure_text}",
+        "",
+        f"最终状态: {run_result.final_status}",
+    ]
+
+
+def _format_single_user_statistics(
+    run_result: RunResult, status_text: str
+) -> List[str]:
+    """生成单用户阅读统计通知内容。"""
+    duration_minutes, duration_seconds = divmod(
+        run_result.total_duration_seconds, 60
+    )
+    lines = [
+        "📚 微信读书运行报告",
+        f"📖 阅读状态：{status_text}",
+        f"⏱️ 阅读时长：{duration_minutes}分{duration_seconds}秒",
+        f"✅ 成功请求：{run_result.total_reads}次",
+        f"❌ 失败请求：{run_result.total_failed_reads}次",
+    ]
+    if run_result.failure_categories:
+        categories = "、".join(
+            f"{name} {count}次"
+            for name, count in run_result.failure_categories.items()
+        )
+        lines.append(f"🧩 失败分类：{categories}")
+    return lines
+
+
+def format_run_result_notification(
+    run_result: RunResult, include_statistics: bool = True
+) -> str:
+    """合并阅读统计与领奖结果，生成单条通知。"""
+    status_labels = {
+        "success": "成功",
+        "partial_success": "部分成功",
+        "failed": "失败",
+        "cancelled": "已取消",
+    }
+    status_text = status_labels.get(
+        run_result.final_status, run_result.final_status
+    )
+    if not include_statistics:
+        lines = ["🎁 微信读书奖励结果"]
+    elif run_result.user_count > 1:
+        lines = _format_multi_user_statistics(run_result)
+    else:
+        lines = _format_single_user_statistics(run_result, status_text)
+    if run_result.gain:
+        lines.append(format_gain_notification(run_result.gain))
+    return "\n".join(lines)
+
+
 # ==================
 # 配置与解析
 # ==================
@@ -3361,6 +3461,7 @@ class WeReadApplication:
             instance.execution_type,
             run_summary=result.to_summary_dict(),
         )
+        await cls._notify_run_result(instance, result)
         return result
 
     @classmethod
@@ -3393,18 +3494,6 @@ class WeReadApplication:
                 classify_runtime_error(e),
                 str(e),
             )
-
-            # 发送错误通知
-            try:
-                notification_service = NotificationService(
-                    instance.config.notification
-                )
-                await notification_service.send_notification_async(
-                    error_msg,
-                    event=NotificationEvent.SESSION_FAILURE
-                )
-            except Exception:
-                pass
             return RunResult.from_session_results([result])
         finally:
             if session_manager is not None:
@@ -3466,31 +3555,49 @@ class WeReadApplication:
         if derived:
             credentials = (derived["wr_skey"], int(derived["wr_vid"]))
         result.gain = await gain_manager.run(credentials=credentials)
-        await cls._notify_gain_result(instance.config, result.gain)
 
-    @staticmethod
-    async def _notify_gain_result(
-        config: WeReadConfig, gain_summary: Dict[str, Any]
+    @classmethod
+    async def _notify_run_result(
+        cls, instance: "WeReadApplication", run_result: RunResult
     ) -> None:
-        """领奖有结果（领取成功或失败）时发送通知。"""
-        status = gain_summary.get("status")
-        claimed = gain_summary.get("claimed") or []
-        if status == "failed":
-            message = f"🎁 领奖失败: {gain_summary.get('error')}"
-        elif claimed:
-            message = (
-                f"🎁 领奖完成: 已领取档位 {claimed} "
-                f"(类型 {gain_summary.get('gain_type')})"
-            )
-        else:
+        """在阅读与领奖都结束后，仅发送一条合并结果通知。"""
+        notification_config = instance.config.notification
+        if not notification_config.enabled:
             return
+        if run_result.final_status == "success":
+            gain_status = (run_result.gain or {}).get("status")
+            if gain_status in {"failed", "partial_success"}:
+                event = NotificationEvent.GENERAL
+            elif notification_config.include_statistics:
+                event = (
+                    NotificationEvent.SESSION_SUCCESS
+                    if run_result.user_count <= 1
+                    else NotificationEvent.MULTI_USER_SUMMARY
+                )
+            elif run_result.gain and (
+                run_result.gain.get("status") == "failed"
+                or run_result.gain.get("claimed")
+                or run_result.gain.get("claimable", 0)
+            ):
+                event = NotificationEvent.GENERAL
+            else:
+                return
+        elif run_result.final_status == "partial_success":
+            event = NotificationEvent.SESSION_FAILURE
+        else:
+            event = NotificationEvent.SESSION_FAILURE
+
         try:
-            notification_service = NotificationService(config.notification)
-            await notification_service.send_notification_async(
-                message, event=NotificationEvent.GENERAL
+            service = NotificationService(notification_config)
+            await service.send_notification_async(
+                format_run_result_notification(
+                    run_result,
+                    include_statistics=notification_config.include_statistics,
+                ),
+                event=event,
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logging.warning("运行结果通知发送失败: %s", type(exc).__name__)
 
     @classmethod
     async def _run_multi_user_sessions(cls, instance) -> RunResult:
@@ -3544,16 +3651,6 @@ class WeReadApplication:
                         f"❌ 用户 {user_config.name} 阅读会话执行失败: {e}"
                     )
                     logging.error(error_msg)
-                    try:
-                        notification_service = NotificationService(
-                            instance.config.notification
-                        )
-                        await notification_service.send_notification_async(
-                            error_msg,
-                            event=NotificationEvent.SESSION_FAILURE
-                        )
-                    except Exception:
-                        pass
                     return user_config.name, SessionResult(
                         SessionStatus.FAILED,
                         ReadingSession(user_name=user_config.name),
@@ -3618,25 +3715,6 @@ class WeReadApplication:
 
         logging.info("📊 多用户会话总结:")
         logging.info(summary)
-
-        # 单用户场景下会话摘要已单独推送，跳过重复的多用户总结通知
-        if run_result.user_count <= 1:
-            logging.info("🔕 单用户运行，跳过多用户总结通知")
-            return
-
-        # 发送总结通知
-        if (instance.config.notification.enabled and
-                instance.config.notification.include_statistics):
-            try:
-                notification_service = NotificationService(
-                    instance.config.notification
-                )
-                await notification_service.send_notification_async(
-                    summary,
-                    event=NotificationEvent.MULTI_USER_SUMMARY
-                )
-            except Exception as e:
-                logging.error(f"❌ 多用户总结通知发送失败: {e}")
 
 
 class WeReadSessionManager:
@@ -4221,23 +4299,11 @@ class WeReadSessionManager:
             await self.http_client.close()
 
     async def _notify_session_result(self, result: SessionResult) -> None:
-        """按最终状态发送会话通知，通知失败不改变会话结果。"""
-        if not (self.config.notification.enabled and
-                self.config.notification.include_statistics):
-            return
-        try:
-            if result.status == SessionStatus.SUCCESS:
-                await self.notification_service.send_notification_async(
-                    self.session_stats.get_statistics_summary(),
-                    event=NotificationEvent.SESSION_SUCCESS,
-                )
-            elif result.status == SessionStatus.FAILED:
-                await self.notification_service.send_notification_async(
-                    result.message or "阅读会话失败",
-                    event=NotificationEvent.SESSION_FAILURE,
-                )
-        except Exception as exc:
-            logging.warning("会话通知发送失败: %s", exc)
+        """延后通知，待领奖完成后由运行结果通知统一发送。"""
+        logging.info(
+            "📨 阅读会话结束（%s），将在领奖后统一发送结果通知",
+            result.status.value,
+        )
 
     def _prepare_read_payload(self, last_time: int) -> Tuple[str, str]:
         """准备单次阅读请求的协议载荷"""
@@ -4648,16 +4714,7 @@ def format_last_run_summary(last_record: Optional[Dict[str, Any]]) -> str:
 
     gain_summary = last_record.get("gain")
     if gain_summary:
-        claimed = gain_summary.get("claimed") or []
-        if gain_summary.get("status") == "failed":
-            lines.append(f"  🎁 领奖: 失败 ({gain_summary.get('error')})")
-        elif claimed:
-            lines.append(
-                f"  🎁 领奖: 已领取档位 {claimed} "
-                f"(类型 {gain_summary.get('gain_type')})"
-            )
-        else:
-            lines.append("  🎁 领奖: 无可领取档位")
+        lines.append(f"  {format_gain_notification(gain_summary)}")
     return "\n".join(lines)
 
 
@@ -4694,6 +4751,7 @@ class GainManager:
         self.config = config
         self.gain_config = config.gain
         self._injected_client = http_client
+        self._claimable_rewards: Dict[int, Dict[str, Any]] = {}
 
     async def run(
         self, credentials: Optional[Tuple[str, int]] = None
@@ -4737,6 +4795,10 @@ class GainManager:
                     http_client, accesstoken, vid, level_id, gain_type
                 ):
                     summary["claimed"].append(level_id)
+                    award = self._claimable_rewards.get(level_id, {})
+                    summary.setdefault("claimed_rewards", []).append(
+                        self._describe_reward(award, gain_type)
+                    )
 
             if len(summary["claimed"]) == len(claimable):
                 summary["status"] = "success"
@@ -4805,12 +4867,45 @@ class GainManager:
             http_client, accesstoken, vid,
             self._exchange_body(0, 0, exchange=False),
         )
-        return [
-            award.get("awardLevelId")
-            for group in ("readtimeAwards", "readdayAwards", "readgoalAwards")
-            for award in (data.get(group) or [])
-            if award.get("awardStatus") == 1
-        ]
+        self._claimable_rewards = {}
+        claimable = []
+        for group in ("readtimeAwards", "readdayAwards", "readgoalAwards"):
+            for award in data.get(group) or []:
+                if award.get("awardStatus") != 1:
+                    continue
+                level_id = award.get("awardLevelId")
+                if level_id is None:
+                    continue
+                self._claimable_rewards[level_id] = award
+                claimable.append(level_id)
+        return claimable
+
+    @staticmethod
+    def _describe_reward(award: Dict[str, Any], gain_type: int) -> str:
+        """根据接口返回的选项与描述生成实际奖励名称和数量。"""
+        choice_type = 1 if gain_type == 1 else 2
+        for choice in award.get("awardChoices") or []:
+            if choice.get("choiceType") == choice_type:
+                count = choice.get("awardNum")
+                if gain_type == 1:
+                    return f"{count}天体验卡"
+                return f"{count}书币"
+
+        description = award.get("awardChoicesDesc", "")
+        if gain_type == 1:
+            match = re.search(r"可得\s*(\d+)\s*天体验卡", description)
+            if match:
+                return f"{match.group(1)}天体验卡"
+        else:
+            match = re.search(
+                r"或\s*(\d+)\s*书币|可得\s*(\d+)\s*书币",
+                description,
+            )
+            if match:
+                return f"{next(value for value in match.groups() if value)}书币"
+
+        reward_name = "体验卡" if gain_type == 1 else "书币"
+        return f"{reward_name}（数量未知）"
 
     async def _claim(
         self,
@@ -5483,16 +5578,10 @@ async def _run_gain_only(config: WeReadConfig) -> int:
     logging.info("🎁 领奖专用模式：跳过阅读会话，仅执行每周奖励领取")
     gain_summary = await GainManager(config).run()
 
-    claimed = gain_summary.get("claimed") or []
-    if gain_summary.get("status") == "failed":
-        message = f"🎁 领奖失败: {gain_summary.get('error')}"
-    elif claimed:
-        message = (
-            f"🎁 领奖完成: 已领取档位 {claimed} "
-            f"(类型 {gain_summary.get('gain_type')})"
-        )
-    else:
-        message = "🎁 领奖检查完成: 当前没有可领取的奖励档位"
+    message = format_run_result_notification(
+        RunResult(final_status="success", user_count=0, gain=gain_summary),
+        include_statistics=False,
+    )
     logging.info(message)
 
     try:

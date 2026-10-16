@@ -138,33 +138,210 @@ class ApplicationResultTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(exit_code, 130)
 
-    async def test_single_user_run_skips_multi_user_summary_notification(self):
+    async def test_run_notification_combines_reading_and_claimed_reward_once(self):
+        config = self.bot.WeReadConfig()
+        app = object.__new__(self.bot.WeReadApplication)
+        app.config = config
+        result = self.bot.RunResult(
+            final_status="success",
+            user_count=1,
+            successful_users=1,
+            total_duration_seconds=2924,
+            total_reads=42,
+            total_failed_reads=1,
+            gain={
+                "status": "success",
+                "gain_type": 1,
+                "claimed": [11],
+                "claimed_rewards": ["1天体验卡"],
+            },
+        )
+
+        service = unittest.mock.MagicMock()
+        service.send_notification_async = AsyncMock(return_value=True)
+        with patch.object(
+            self.bot, "NotificationService", return_value=service
+        ):
+            await self.bot.WeReadApplication._notify_run_result(app, result)
+
+        service.send_notification_async.assert_awaited_once()
+        sent_message = service.send_notification_async.await_args.args[0]
+        self.assertIn("阅读时长：48分44秒", sent_message)
+        self.assertIn("已领取：1天体验卡", sent_message)
+        self.assertNotIn("档位", sent_message)
+        self.assertNotIn("11", sent_message)
+        self.assertEqual(
+            service.send_notification_async.await_args.kwargs["event"],
+            self.bot.NotificationEvent.SESSION_SUCCESS,
+        )
+
+    async def test_failed_gain_uses_general_notification_event(self):
+        config = self.bot.WeReadConfig()
+        app = object.__new__(self.bot.WeReadApplication)
+        app.config = config
+        result = self.bot.RunResult(
+            final_status="success",
+            user_count=1,
+            successful_users=1,
+            gain={"status": "failed", "error": "鉴权失败"},
+        )
+        service = unittest.mock.MagicMock()
+        service.send_notification_async = AsyncMock(return_value=True)
+
+        with patch.object(
+            self.bot, "NotificationService", return_value=service
+        ):
+            await self.bot.WeReadApplication._notify_run_result(app, result)
+
+        service.send_notification_async.assert_awaited_once()
+        self.assertEqual(
+            service.send_notification_async.await_args.kwargs["event"],
+            self.bot.NotificationEvent.GENERAL,
+        )
+
+    async def test_reward_only_notification_does_not_include_reading_statistics(self):
+        config = self.bot.WeReadConfig()
+        config.notification.include_statistics = False
+        app = object.__new__(self.bot.WeReadApplication)
+        app.config = config
+        result = self.bot.RunResult(
+            final_status="success",
+            user_count=1,
+            successful_users=1,
+            gain={
+                "status": "success",
+                "claimed": [4],
+                "claimed_rewards": ["1天体验卡"],
+            },
+        )
+        service = unittest.mock.MagicMock()
+        service.send_notification_async = AsyncMock(return_value=True)
+
+        with patch.object(
+            self.bot, "NotificationService", return_value=service
+        ):
+            await self.bot.WeReadApplication._notify_run_result(app, result)
+
+        service.send_notification_async.assert_awaited_once()
+        message = service.send_notification_async.await_args.args[0]
+        self.assertIn("已领取：1天体验卡", message)
+        self.assertNotIn("阅读时长", message)
+
+    async def test_run_single_session_sends_only_after_gain_finishes(self):
         app = object.__new__(self.bot.WeReadApplication)
         app.config = self.bot.WeReadConfig()
-        single = self.bot.RunResult(
+        app.execution_type = "normal"
+        self.bot.WeReadApplication._instance = app
+        result = self.bot.RunResult(
             final_status="success", user_count=1, successful_users=1
         )
-        multi = self.bot.RunResult(
-            final_status="success", user_count=2, successful_users=2
+        steps = []
+
+        async def finish_gain(_instance, run_result):
+            steps.append("gain")
+            run_result.gain = {"status": "success", "claimed_rewards": [
+                "2天体验卡"
+            ]}
+
+        async def notify(_instance, run_result):
+            self.assertIn("claimed_rewards", run_result.gain)
+            steps.append("notify")
+
+        with (
+            patch.object(
+                self.bot.WeReadApplication,
+                "_derive_web_session_if_configured",
+                new=AsyncMock(),
+            ),
+            patch.object(
+                self.bot.WeReadApplication,
+                "_run_single_user_session",
+                new=AsyncMock(return_value=result),
+            ),
+            patch.object(
+                self.bot.WeReadApplication,
+                "_run_gain_if_configured",
+                new=AsyncMock(side_effect=finish_gain),
+            ),
+            patch.object(
+                self.bot.WeReadApplication,
+                "_notify_run_result",
+                new=AsyncMock(side_effect=notify),
+            ),
+            patch.object(self.bot, "persist_run_history"),
+        ):
+            await self.bot.WeReadApplication.run_single_session()
+
+        self.assertEqual(steps, ["gain", "notify"])
+
+    async def test_partial_run_uses_session_failure_notification_trigger(self):
+        config = self.bot.WeReadConfig()
+        config.notification.triggers[
+            self.bot.NotificationEvent.SESSION_FAILURE
+        ] = False
+        config.notification.triggers[
+            self.bot.NotificationEvent.MULTI_USER_SUMMARY
+        ] = True
+        app = object.__new__(self.bot.WeReadApplication)
+        app.config = config
+        result = self.bot.RunResult(
+            final_status="partial_success", user_count=2,
+            successful_users=1, failed_users=1,
+        )
+        service = unittest.mock.MagicMock()
+        service.send_notification_async = AsyncMock(return_value=True)
+
+        with patch.object(
+            self.bot, "NotificationService", return_value=service
+        ):
+            await self.bot.WeReadApplication._notify_run_result(app, result)
+
+        service.send_notification_async.assert_awaited_once()
+        self.assertEqual(
+            service.send_notification_async.await_args.kwargs["event"],
+            self.bot.NotificationEvent.SESSION_FAILURE,
         )
 
-        send = AsyncMock()
-        with patch.object(
-            self.bot.NotificationService,
-            "send_notification_async",
-            new=send,
-        ):
-            with self.assertLogs(level="INFO"):
-                await self.bot.WeReadApplication._generate_multi_user_summary(
-                    app, single
-                )
-            send.assert_not_awaited()
+    async def test_multi_user_summary_is_sent_once_in_combined_notification(self):
+        config = self.bot.WeReadConfig()
+        app = object.__new__(self.bot.WeReadApplication)
+        app.config = config
+        result = self.bot.RunResult(
+            final_status="success", user_count=2, successful_users=2,
+            total_duration_seconds=600, total_reads=14,
+            gain={
+                "status": "success",
+                "claimed_rewards": ["1天体验卡"],
+            },
+        )
+        service = unittest.mock.MagicMock()
+        service.send_notification_async = AsyncMock(return_value=True)
 
-            with self.assertLogs(level="INFO"):
-                await self.bot.WeReadApplication._generate_multi_user_summary(
-                    app, multi
-                )
-            send.assert_awaited_once()
+        with patch.object(
+            self.bot, "NotificationService", return_value=service
+        ):
+            await self.bot.WeReadApplication._generate_multi_user_summary(
+                app, result
+            )
+            await self.bot.WeReadApplication._notify_run_result(app, result)
+
+        service.send_notification_async.assert_awaited_once()
+        message = service.send_notification_async.await_args.args[0]
+        self.assertIn("多用户阅读会话总结", message)
+        self.assertIn("总阅读时长: 10分0秒", message)
+        self.assertIn("已领取：1天体验卡", message)
+
+    def test_multi_user_notification_has_no_duplicate_statistics(self):
+        result = self.bot.RunResult(
+            final_status="success", user_count=2, successful_users=2,
+            total_duration_seconds=600, total_reads=14,
+            failure_categories={"network": 1},
+        )
+
+        message = self.bot.format_run_result_notification(result)
+
+        self.assertEqual(message.count("总阅读时长"), 1)
+        self.assertEqual(message.count("失败分类"), 1)
 
     async def test_dry_run_validation_failure_does_not_send_notification(self):
         config = self.bot.WeReadConfig(curl_content="safe")
